@@ -1,12 +1,12 @@
 blueprint:
-  name: "Camera: Popup with snapshots for detection event"
+  name: "Camera: Popup for detection event"
   description: |-
     When a detection event happends on a camera, emit a browser-mod popup showing some snapshots and
     a live feed. The snapshots are used because sometimes it takes some time for the feed to load.
 
-    The snapshots are saved in a 'latest' media folder. When an event occurs, any existing snapshots
-    are moved to a sibling folder organized by year then month then day. This is done by a shell command,
-    which needs to be defined in the configuration.yaml as follows.
+    The snapshots are saved in a 'latest' media folder. When an event occurs, any existing snapshots are
+    moved to a sibling folder organized by year then month then day. This is done by a shell command, which
+    needs to be defined in the configuration.yaml as follows.
 
     <detail>
     <summary>configuration.yaml</summary>
@@ -31,8 +31,8 @@ blueprint:
         done'
       ```
     </detail>
-    "
-  source_url: https://raw.githubusercontent.com/drewkeller/home_assistant_blueprints/refs/heads/master/camera_popup_snapshots.yaml
+
+  source_url: https://raw.githubusercontent.com/drewkeller/home_assistant_blueprints/refs/heads/main/camera_popup_snapshots.yaml
   domain: automation
 
   input:
@@ -61,6 +61,20 @@ blueprint:
       selector:
         text: {}
       default: "media-source://media_source/local/snapshots"
+    audio_alert_media:
+      name: Audio alert
+      description: A sound to play
+      default: "/local/audio/alert.mp3"
+      selector:
+        text: {}
+    audio_alert_targets:
+      name: Audio alert targets
+      description: Media players on which to play the alert media
+      default: {}
+      selector:
+        target:
+          entity:
+            domain: media_player
     camera_id:
       name: Camera ID
       description: The "machine name" for the camera, to be used as a folder name within the snapshots folder, e.g. "my_cam"
@@ -85,141 +99,181 @@ blueprint:
           multiple: true
 
 mode: single
+max: 10
+
 variables:
   motion_sensors: !input motion_sensors
   camera_feed: !input camera
   snapshots_folder: !input snapshots_folder
   snapshots_media_path: !input snapshots_media_path
   camera_id: !input camera_id
+  media_players: !input audio_alert_targets
 
 triggers:
   - trigger: state
     entity_id: !input motion_sensors
+    to:
+      - "on"
+
+conditions:
+  - condition: not
+    conditions:
+      - condition: state
+        entity_id: input_select.motion_notifications
+        state:
+          - ManualOff
 
 actions:
-  - sequence:
-      - alias: text-to-speech the activation entity (usually name of camera and type of activation)
-        action: tts.speak
-        metadata: {}
-        target:
-          entity_id: tts.piper
-        data:
-          cache: true
-          media_player_entity_id: media_player.vader
-          message: >-
-            Camera triggered by  {% if trigger.from_state is defined %} {{
-            trigger.from_state.attributes.friendly_name }}  {% else %} unknown
-            source {% endif %}
-      - alias: Archive existing snapshots out of the 'latest' folder
-        action: shell_command.archive_snapshots
-        data:
-          snapshotsfolder: "{{ snapshots_folder }}"
-          cameraid: "{{ camera_id }}"
-        response_variable: response
-      - alias: Timestamp variable
-        variables:
-          timestamp: |
-            {{ now().strftime("%Y-%m-%d_%H-%M-%S-%f")[:23] }}
-      - alias: Get an immediate snapshot from the feed
-        action: camera.snapshot
-        data:
-          filename: >-
-            {{ snapshots_folder }}/{{ camera_id }}/latest/{{ timestamp }}.jpg
-        target:
-          entity_id: !input camera
-      - alias: Show the initial snapshot image
-        action: input_boolean.turn_on
-        metadata: {}
-        target:
-          entity_id: input_boolean.refresher
-        data: {}
-      - alias: Emit a popup in the browser
-        action: browser_mod.popup
-        data:
-          user_id: !input popup_targets_users
-          target: !input popup_targets_devices
-          title: >
-            {% if trigger.from_state is defined %}
-            {{ trigger.from_state.attributes.friendly_name }}
-            {% else %} Triggered by unknown source {% endif %}
-          timeout: 30000
-          content:
-            type: vertical-stack
-            cards:
-              - type: picture-entity
-                show_state: true
-                show_name: true
-                camera_view: live
-                fit_mode: cover
-                entity: "{{camera_feed}}"
-                show_entity_picture: false
-                camera_image: "{{camera_feed}}"
-              - type: conditional
-                alias: This card shows the first image
-                conditions:
-                  - condition: state
-                    entity: input_boolean.refresher
-                    state: "on"
-                card:
-                  type: custom:media-viewer-card
-                  media_source_type: folder
-                  folder:
-                    path: "{{snapshots_media_path}}/{{camera_id}}/latest"
-                    mode: sequential
-                    sequential:
-                      order_by: filename
-                      order_direction: asc
-                  media_type: all
-                  auto_advance_seconds: 0
-                  auto_refresh_seconds: 60
-                  show_refresh_button: true
-                  enable_navigation_zones: true
-                  title: ""
-                  media_path: "{{snapshots_media_path}}/{{camera_id}}/latest"
-              - type: conditional
-                alias: This card shows all of the images in the latest folder
-                conditions:
-                  - condition: state
-                    entity: input_boolean.refresher
-                    state: "off"
-                card:
-                  type: custom:media-viewer-card
-                  media_source_type: folder
-                  folder:
-                    path: "{{snapshots_media_path}}/{{camera_id}}/latest"
-                    mode: sequential
-                    sequential:
-                      order_by: filename
-                      order_direction: asc
-                  media_type: all
-                  auto_advance_seconds: 1
-                  auto_refresh_seconds: 60
-                  show_refresh_button: true
-                  enable_navigation_zones: true
-                  title: ""
-                  media_path: "{{snapshots_media_path}}/{{camera_id}}/latest"
-      - repeat:
-          count: 4
-          sequence:
-            - alias: Timestamp variable
-              variables:
-                timestamp: |
-                  {{ now().strftime("%Y-%m-%d_%H-%M-%S-%f")[:23] }}
-            - action: camera.snapshot
-              metadata: {}
-              data:
-                filename: >-
-                  {{ snapshots_folder }}/{{ camera_id }}/latest/{{ timestamp }}.jpg
-              target:
-                entity_id: !input camera
-              enabled: true
-            - delay:
-                hours: 0
-                minutes: 0
-                seconds: 1
-      - action: input_boolean.turn_off
-        alias: Show the slideshot image
-        metadata: {}
-        target:
-          entity_id: input_boolean.refresher
-        data: {}
+  - parallel:
+      # --- Branch 1: Play media file and text to speech
+      - sequence:
+          - variables:
+              media_players_list: >-
+                {% set ns = namespace(entities=[]) %}
+                {% if media_players.entity_id is defined %}
+                  {% set ents = media_players.entity_id if media_players.entity_id is iterable and media_players.entity_id is not string else [media_players.entity_id] %}
+                  {% set ns.entities = ns.entities + ents %}
+                {% endif %}
+                {{ ns.entities | unique | list }}
+              media_players_string: '{{ media_players_list | join(",") }}'
+              trigger_entity_name: >-
+                {{ (trigger.to_state or trigger.from_state).attributes.friendly_name if (trigger.to_state or trigger.from_state) is defined else "unknown source" }}
+              trigger_device_name: >-
+                {{ device_attr(trigger.entity_id, "name") if trigger.entity_id is defined else "camera" }}
+          - alias: Play audio file
+            action: media_player.play_media
+            target: !input audio_alert_targets
+            data:
+              media_content_id: !input audio_alert_media
+              media_content_type: music
+          - alias: Wait for the first media player to finish playing the file
+            wait_for_trigger:
+              - platform: template
+                value_template: "{{ not is_state(media_players_list[0], 'playing') }}"
+            # safety timeout
+            timeout: "00:00:10"
+            continue_on_timeout: true
+          - alias: text-to-speech the activation entity (name of camera and type of activation)
+            action: tts.speak
+            metadata: {}
+            target:
+              entity_id: tts.piper
+            data:
+              cache: true
+              media_player_entity_id: "{{ media_players_list }}"
+              message: "{{ trigger_device_name }} triggered by {{ trigger_entity_name }}"
+      # --- Branch 2: Show popup
+      - sequence:
+          - alias: Archive existing snapshots out of the 'latest' folder
+            action: shell_command.archive_snapshots
+            data:
+              snapshotsfolder: "{{ snapshots_folder }}"
+              cameraid: "{{ camera_id }}"
+            response_variable: response
+          - alias: Timestamp variable
+            variables:
+              timestamp: |
+                {{ now().strftime("%Y-%m-%d_%H-%M-%S-%f")[:23] }}
+          - alias: Get an immediate snapshot from the feed
+            action: camera.snapshot
+            data:
+              filename: >-
+                {{ snapshots_folder }}/{{ camera_id }}/latest/{{ timestamp }}.jpg
+            target:
+              entity_id: !input camera
+          - alias: Show the initial snapshot image
+            action: input_boolean.turn_on
+            metadata: {}
+            target:
+              entity_id: input_boolean.refresher
+            data: {}
+          - alias: Emit a popup in the browser
+            action: browser_mod.popup
+            data:
+              user_id: !input popup_targets_users
+              target: !input popup_targets_devices
+              title: >
+                {% if trigger.from_state is defined %}
+                {{ trigger.from_state.attributes.friendly_name }}
+                {% else %} Triggered by unknown source {% endif %}
+              timeout: 30000
+              content:
+                type: vertical-stack
+                cards:
+                  - type: picture-entity
+                    show_state: true
+                    show_name: true
+                    camera_view: live
+                    fit_mode: cover
+                    entity: "{{camera_feed}}"
+                    show_entity_picture: false
+                    camera_image: "{{camera_feed}}"
+                  - type: conditional
+                    alias: This card shows the first image
+                    conditions:
+                      - condition: state
+                        entity: input_boolean.refresher
+                        state: "on"
+                    card:
+                      type: custom:media-viewer-card
+                      media_source_type: folder
+                      folder:
+                        path: "{{snapshots_media_path}}/{{camera_id}}/latest"
+                        mode: sequential
+                        sequential:
+                          order_by: filename
+                          order_direction: asc
+                      media_type: all
+                      auto_advance_seconds: 0
+                      auto_refresh_seconds: 60
+                      show_refresh_button: true
+                      enable_navigation_zones: true
+                      title: ""
+                      media_path: "{{snapshots_media_path}}/{{camera_id}}/latest"
+                  - type: conditional
+                    alias: This card shows all of the images in the latest folder
+                    conditions:
+                      - condition: state
+                        entity: input_boolean.refresher
+                        state: "off"
+                    card:
+                      type: custom:media-viewer-card
+                      media_source_type: folder
+                      folder:
+                        path: "{{snapshots_media_path}}/{{camera_id}}/latest"
+                        mode: sequential
+                        sequential:
+                          order_by: filename
+                          order_direction: asc
+                      media_type: all
+                      auto_advance_seconds: 1
+                      auto_refresh_seconds: 60
+                      show_refresh_button: true
+                      enable_navigation_zones: true
+                      title: ""
+                      media_path: "{{snapshots_media_path}}/{{camera_id}}/latest"
+          - repeat:
+              count: 4
+              sequence:
+                - alias: Timestamp variable
+                  variables:
+                    timestamp: |
+                      {{ now().strftime("%Y-%m-%d_%H-%M-%S-%f")[:23] }}
+                - action: camera.snapshot
+                  metadata: {}
+                  data:
+                    filename: >-
+                      {{ snapshots_folder }}/{{ camera_id }}/latest/{{ timestamp }}.jpg
+                  target:
+                    entity_id: !input camera
+                  enabled: true
+                - delay:
+                    hours: 0
+                    minutes: 0
+                    seconds: 1
+          - action: input_boolean.turn_off
+            alias: Show the slideshot image
+            metadata: {}
+            target:
+              entity_id: input_boolean.refresher
+            data: {}
