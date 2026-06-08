@@ -1,0 +1,117 @@
+blueprint:
+  name: "Zone: Play arriving/leaving media"
+  description: |-
+    When a person enters or leaves a zone, play a ringtone and send text-to-speech to media players:
+    "<name> is <arriving/leaving>: <zone>"
+
+  source_url: https://raw.githubusercontent.com/drewkeller/home_assistant_blueprints/refs/heads/main/zone_change_media_actions.yaml
+  domain: automation
+
+  input:
+    persons:
+      name: People
+      selector:
+        entity:
+          multiple: true
+          filter:
+            domain: person
+    arriving_media:
+      name: Arriving media
+      default: "/local/audio/alert.mp3"
+      selector:
+        text: {}
+    leaving_media:
+      name: Leaving media
+      default: "/local/audio/alert.mp3"
+      selector:
+        text: {}
+    media_players:
+      name: Where to play media
+      selector:
+        target:
+          entity:
+            domain: media_player
+    tts_engine:
+      name: Text-to-speech engine
+      description: Choose the Text-to-Speech engine (e.g. Piper, Cloud TTS, Google)
+      selector:
+        entity:
+          filter:
+            domain: tts
+mode: single
+
+variables:
+  persons:        !input persons
+  arriving_media: !input arriving_media
+  leaving_media:  !input leaving_media
+  media_players:  !input media_players
+
+triggers:
+  - trigger: state
+    entity_id: !input persons
+    from:
+      - not_home
+    id: Arriving
+  - trigger: state
+    entity_id: !input persons
+    id: Leaving
+    to:
+      - not_home
+
+conditions: []
+
+actions:
+  - variables:
+      person: "{{ trigger.entity_id }}"
+      person_name: '{{ state_attr(trigger.entity_id, "friendly_name") if trigger.entity_id is defined else "person" }}'
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ states(trigger.entity_id) == "unavailable" }}'
+        sequence: []
+    default:
+      - sequence:
+          - variables:
+              # Don't speak the location if the state is 'not_home'
+              is_arriving: '{{ trigger.id }} == Arriving'
+              is_leaving:  '{{ trigger.id }} == Leaving'
+              to_zone1:    '{{ trigger.to_state.state   if trigger.to_state != None }}'
+              from_zone1:  '{{ trigger.from_state.state if trigger.from_state != None }}'
+              to_zone:     '{{ to_zone1 if to_zone1 != "not_home" else "" }}'
+              from_zone:   '{{ from_zone1 if from_zone1 != "not_home" else "" }}'
+              media:       '{{ arriving_media if is_arriving else leaving_media }}'
+              zone:        '{{ to_zone if is_arriving else from_zone if is_leaving else "somewhere" }}'
+              media_players_list: >-
+                {% set ns = namespace(entities=[]) %}
+                {% if media_players.entity_id is defined %}
+                  {% set ents = media_players.entity_id if media_players.entity_id is iterable and media_players.entity_id is not string else [media_players.entity_id] %}
+                  {% set ns.entities = ns.entities + ents %}
+                {% endif %}
+                {{ ns.entities | unique | list }}
+          - alias: Play audio file
+            action: media_player.play_media
+            target: !input media_players
+            data:
+              media_content_id: "{{ media }}"
+              media_content_type: music
+          - alias: Wait for the first media player to finish playing the file
+            wait_for_trigger:
+              - platform: template
+                value_template: "{{ not is_state(media_players_list[0], 'playing') }}"
+            # safety timeout
+            timeout: "00:00:10"
+            continue_on_timeout: true
+          - action: tts.speak
+            metadata: {}
+            target:
+              entity_id: !input tts_engine
+            data:
+              cache: true
+              media_player_entity_id: "{{ media_players_list }}"
+              # Typical wording is different for different locations.
+              # For instance:
+              #  * Weird: Joe is arriving at the home   OK   : Joe is arriving at the library
+              #  * OK   : Joe is arriving home          Weird: Joe is arriving library
+              # Instead, this works more globally:
+              #  * Joe is arriving: <name of place>
+              message: '{{ person_name }} is {{ trigger.id }}: {{ zone }}'
