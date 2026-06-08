@@ -16,13 +16,26 @@ blueprint:
           filter:
             domain: person
     arriving_media:
-      name: Arriving media
-      default: "/local/audio/alert.mp3"
+      name: Arriving media (optional)
+      description: |-
+        Leave blank if you don't want to play an "arriving" media.
+        Assuming a subpath like `audio/alert.mp3`
+        * If media is placed in the `www` folder
+            the path is
+            `/local/audio/alert.mp3`
+        * If media is placed in local media storage, the path is
+            `media-source://media_source/local/audio/alert.mp3`
+        * If media is placed in media storage on a network share, the path is
+            `media-source://media_source/local/my_share/audio/alert.mp3`
+      default: ""
       selector:
         text: {}
     leaving_media:
-      name: Leaving media
-      default: "/local/audio/alert.mp3"
+      name: Leaving media (optional)
+      description: |-
+        Leave blank if you don't want to play a "leaving" media.
+        See *Arriving media* for pathing info.
+      default: ""
       selector:
         text: {}
     media_players:
@@ -32,8 +45,11 @@ blueprint:
           entity:
             domain: media_player
     tts_engine:
-      name: Text-to-speech engine
-      description: Choose the Text-to-Speech engine (e.g. Piper, Cloud TTS, Google)
+      name: Text-to-speech engine (optional)
+      description: |-
+        Choose the Text-to-Speech engine (e.g. Piper, Cloud TTS, Google).
+        Leave blank if you don't want to play text-to-speech.
+      default: ""
       selector:
         entity:
           filter:
@@ -41,10 +57,12 @@ blueprint:
 mode: single
 
 variables:
-  persons:        !input persons
+  persons: !input persons
   arriving_media: !input arriving_media
-  leaving_media:  !input leaving_media
-  media_players:  !input media_players
+  leaving_media: !input leaving_media
+  media_players: !input media_players
+  tts_engine_in: !input tts_engine
+  tts_engine: '{{ tts_engine_in if tts_engine_in != "" else None }}'
 
 triggers:
   - trigger: state
@@ -73,14 +91,14 @@ actions:
       - sequence:
           - variables:
               # Don't speak the location if the state is 'not_home'
-              is_arriving: '{{ trigger.id }} == Arriving'
-              is_leaving:  '{{ trigger.id }} == Leaving'
-              to_zone1:    '{{ trigger.to_state.state   if trigger.to_state != None }}'
-              from_zone1:  '{{ trigger.from_state.state if trigger.from_state != None }}'
-              to_zone:     '{{ to_zone1 if to_zone1 != "not_home" else "" }}'
-              from_zone:   '{{ from_zone1 if from_zone1 != "not_home" else "" }}'
-              media:       '{{ arriving_media if is_arriving else leaving_media }}'
-              zone:        '{{ to_zone if is_arriving else from_zone if is_leaving else "somewhere" }}'
+              is_arriving: '{{ trigger.id == "Arriving" }}'
+              is_leaving: '{{ trigger.id == "Leaving" }}'
+              to_zone1: "{{ trigger.to_state.state   if trigger.to_state != None }}"
+              from_zone1: "{{ trigger.from_state.state if trigger.from_state != None }}"
+              to_zone: '{{ to_zone1 if to_zone1 != "not_home" else "" }}'
+              from_zone: '{{ from_zone1 if from_zone1 != "not_home" else "" }}'
+              media: "{{ arriving_media if is_arriving else leaving_media }}"
+              zone: '{{ to_zone if is_arriving else from_zone if is_leaving else "somewhere" }}'
               media_players_list: >-
                 {% set ns = namespace(entities=[]) %}
                 {% if media_players.entity_id is defined %}
@@ -89,29 +107,38 @@ actions:
                 {% endif %}
                 {{ ns.entities | unique | list }}
           - alias: Play audio file
-            action: media_player.play_media
-            target: !input media_players
-            data:
-              media_content_id: "{{ media }}"
-              media_content_type: music
-          - alias: Wait for the first media player to finish playing the file
-            wait_for_trigger:
-              - platform: template
-                value_template: "{{ not is_state(media_players_list[0], 'playing') }}"
-            # safety timeout
-            timeout: "00:00:10"
-            continue_on_timeout: true
-          - action: tts.speak
-            metadata: {}
-            target:
-              entity_id: !input tts_engine
-            data:
-              cache: true
-              media_player_entity_id: "{{ media_players_list }}"
-              # Typical wording is different for different locations.
-              # For instance:
-              #  * Weird: Joe is arriving at the home   OK   : Joe is arriving at the library
-              #  * OK   : Joe is arriving home          Weird: Joe is arriving library
-              # Instead, this works more globally:
-              #  * Joe is arriving: <name of place>
-              message: '{{ person_name }} is {{ trigger.id }}: {{ zone }}'
+            if:
+              - condition: template
+                value_template: '{{ media != "" }}'
+            then:
+              - action: media_player.play_media
+                target: !input media_players
+                data:
+                  media_content_id: "{{ media }}"
+                  media_content_type: "music"
+              - alias: Wait for the first media player to finish playing the file
+                wait_for_trigger:
+                  - platform: template
+                    value_template: "{{ not is_state(media_players_list[0], 'playing') }}"
+                # safety timeout
+                timeout: "00:00:10"
+                continue_on_timeout: true
+          - alias: Play text-to-speech
+            if:
+              - condition: template
+                value_template: '{{ tts_engine != None }}'
+            then:
+              - action: tts.speak
+                metadata: {}
+                target:
+                  entity_id: "{{ tts_engine }}"
+                data:
+                  cache: true
+                  media_player_entity_id: "{{ media_players_list }}"
+                  # Typical wording is different for different locations.
+                  # For instance:
+                  #  * Weird: Joe is arriving at the home   OK   : Joe is arriving at the library
+                  #  * OK   : Joe is arriving home          Weird: Joe is arriving library
+                  # Instead, this works more globally:
+                  #  * Joe is arriving: <name of place>
+                  message: "{{ person_name }} is {{ trigger.id }}: {{ zone }}"
